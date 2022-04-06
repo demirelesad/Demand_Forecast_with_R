@@ -1,0 +1,686 @@
+---
+title: "Demand_Forecast"
+author: "Esad Demirel"
+output: rmarkdown::github_document
+
+---
+
+
+```{r setup, include=FALSE}
+library(readxl)
+library(dplyr)
+library(tidyverse)
+library(outliers)
+library(lubridate)
+library(RColorBrewer)
+library(ggplot2)
+library(rstatix)
+library(fpp2)
+library(TTR)
+library(forecast)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+***PAKETLERİ YÜKLEME***
+
+#library(readxl)
+#library(dplyr)
+#library(tidyverse)
+#library(outliers)
+#library(lubridate)
+#library(RColorBrewer)
+#library(ggplot2)
+#library(rstatix)
+#library(fpp2)
+#library(TTR)
+#library(forecast)
+
+***VERİ OKUTMA***
+
+(Müşteri no, Satış tarihi, Ürün no, Satış adedi, Sipariş no ve Satış tarihinin hangi yıl-ay içinde yapıldığını gösteren bir verimiz var. Biz daha çok Zaman Serisi Analizi üzerinden tarihleri ve bağlı satış adetlerini inceleyeceğiz.)
+
+```{r}
+tt <- read.csv("taleptahmin.csv")
+head(tt)
+```
+```{r}
+nrow(tt) # satir kontrolu
+```
+```{r}
+str(tt) 
+```
+```{r}
+class(tt)
+```
+```{r}
+names(tt) 
+```
+```{r}
+summary(tt)
+```
+
+DEĞİŞKEN İSİMLERİNİ DÜZENLEME
+
+```{r}
+names(tt) <- c("CustomerAccount", "SalesDate", "ProductNumber", "SalesQuantity", "OrderNumber", "Period")
+names(tt)
+
+```
+
+TARİH DEĞİŞKENİNİ DATE YAPMA
+
+(Excelden alinan veride kolon genel olarak kaydedilmiştir. Üzerinde tarih işlemleri yapabilmek için as.Date ile tipini düzeltiyoruz.)
+
+```{r}
+tt$SalesDate <- as.Date(tt$SalesDate)
+str(tt$SalesDate)
+```
+
+HİSTOGRAM GRAFİĞİ
+
+```{r}
+hist(tt$SalesQuantity,
+     breaks = 200,
+     xlim = c(-1000,5000),
+     col = c("#d35400" , "#2c3e50" , "#16a085"), #flatuicolors.com dan renk aldik 
+     prob = T) 
+```
+
+ÜRÜN NUMARALARINA GÖRE SATIŞ ADETLERİ
+
+(Bir ürün üzerinden tahmin yapacağız. En fazla veri satırına sahip veriyi bulmak için table() kullanıyoruz. )
+
+```{r}
+toplam <- tt %>%
+  group_by(ProductNumber)%>%
+  summarize(Toplam_Satis = sum(SalesQuantity))
+head(toplam)
+
+```
+```{r}
+table(tt$ProductNumber)
+```
+
+***NEGATİF VERİ KONTROLÜ***
+
+(Satış adedi negatif olamayacağı için bu verileri giriş hatası olarak kabul ederek verisetinden çıkarıyoruz.)
+
+```{r}
+tt2 <- tt %>%
+  filter(SalesQuantity >= 0 , na.rm = TRUE)
+```
+
+```{r}
+nrow(tt2)  #153688 satir veri
+```
+```{r}
+tt_negatif <- tt %>%
+  filter(SalesQuantity < 0 , na.rm = TRUE)
+nrow(tt_negatif)  #2943 satir veri
+```
+
+***AYKIRI DEĞER KONTROLÜ***
+
+(Veri setimizde şirketin normalde gerçekleştirmediği çok uçuk satış adetleri girilmiştir. Kullanıcı hatası olabilir. Tahminleme modeli üzerine çalıştığımız için daha yakın, gerçekçi verilerle çalışmamız gerekir. Bizi yanıltabilecek verileri ayıklamalıyız. Bunun için iki yöntemi inceliyoruz.)
+
+Z değeri ile Aykırı Değer Kontrolü
+
+```{r}
+#install.packages("outliers")
+#library(outliers)
+```
+
+
+```{r}
+tt2_outliers <- scores(na.omit(tt2$SalesQuantity), type = "z" , prob = 0.95)
+idst1 <- which(tt2_outliers == TRUE)
+```
+
+
+```{r}
+head(na.omit(tt2$SalesQuantity)[idst1]) #1178 satir veri
+```
+```{r}
+min(na.omit(tt2$SalesQuantity)[idst1]) #5500
+max(na.omit(tt2$SalesQuantity)[idst1]) #99000
+```
+(Görüldüğü üzere z değerine göre yapılan analizde, 5500 adetten yukarıda olan satış adetleri aykırı değer olarak belirtildi.)
+
+```{r}
+par(mfrow = c(2,1)) # plot ekranını bölme
+hist(tt2$SalesQuantity, breaks = 50, xlim = c(0,30000), ylim = c(0,1500))
+hist(na.omit(tt2$SalesQuantity)[-idst1], breaks = 50, xlim = c(0,30000), ylim = c(0,1500))# aykırı değerler çıkartılınca
+```
+
+Boxplot Yöntemine Göre Aykırı Değer Kontrolü
+
+```{r}
+#library(rstatix)
+```
+
+```{r}
+tt2_outliers2 <- identify_outliers(tt2[ "SalesQuantity"]) 
+nrow(tt2_outliers2) #20938 satir veri 
+```
+
+```{r}
+min(tt2_outliers2[, "SalesQuantity"]) #539
+max(tt2_outliers2[, "SalesQuantity"]) #99000
+```
+```{r}
+idst2 <- which(tt2_outliers2$is.extreme == TRUE)
+extreme <- tt2_outliers2[idst2 , "SalesQuantity"]
+
+min(extreme) #820
+max(extreme) #99000
+length(extreme)#13005 satir veri
+```
+(Boxplot yöntemine göre aykırı değerler iki farklı gruba ayrıldı. Aykırı değerler ve extreme aykırı değerler. 20938 satır veri aykırı değer olarak algılanırken 13005 satır veri ekstreme aykırı değer olarak belirtildi. Extreme olan aykırı değerlerin minimumu ise 820. 820 şirketin normal olarak alabildiği bir sipariş adedi olduğu için boxplot yöntemi tercih edilmemiştir.)
+
+***KAYIP DEĞER KONTROLÜ***
+
+```{r}
+idst3 <- which(is.na(tt2)) 
+idst3 # na değeri yok
+```
+```{r}
+nrow(tt2)#153688
+```
+
+AYKIRI DEĞERLERİ VERİSETİNDEN ÇIKARTMA
+
+```{r}
+tt3 <- tt2[-idst1 , ] #aykiri deger bulunan satirlari cikartma
+nrow(tt3)#151510
+```
+
+TAMSAYI KONTROLÜ
+
+(Satış adedimiz ondalıklı olamayacağı için veri setinde ondalıklı olarak bulunan satış adetleri giriş hatası olarak belirtilerek çıkarılmıştır.)
+
+```{r}
+tamsayi <- which(tt3$SalesQuantity %% 1 > 0)
+head(tt3[tamsayi, ]) 
+nrow(tt3[tamsayi, ])#587 ondalikli satis adedi
+```
+```{r}
+tt4 <- tt3[-tamsayi, ] #ondalikli degerleri cikartma
+nrow(tt4)#150923 satir veri
+```
+***PRD02 ÜRÜNÜ VERİ SETİ İÇİNDE FİLTRELEME***
+
+(Tek bir ürün üzerinden inceleme yapılacağı için veri satır sayısına göre seçilip filtrelendi.)
+
+```{r}
+PRD02 <- tt4 %>%
+  filter(ProductNumber == "PRD0002" , na.rm = TRUE)
+nrow(PRD02) #6224 satirlik veri
+```
+```{r}
+plot(PRD02$SalesQuantity ~ PRD02$SalesDate )
+```
+
+***YILLARA GÖRE GRUPLANDIRMA***
+
+```{r}
+PRD2014 <- PRD02[PRD02$SalesDate >= "2014-01-01" & PRD02$SalesDate <= "2014-12-31" , c("CustomerAccount" , "SalesDate" , "ProductNumber" , "SalesQuantity" , "OrderNumber" , "Period" )]
+PRD2015 <- PRD02[PRD02$SalesDate >= "2015-01-01" & PRD02$SalesDate <= "2015-12-31" , c("CustomerAccount" , "SalesDate" , "ProductNumber" , "SalesQuantity" , "OrderNumber" , "Period" )]
+PRD2016 <- PRD02[PRD02$SalesDate >= "2016-01-01" & PRD02$SalesDate <= "2016-12-31" , c("CustomerAccount" , "SalesDate" , "ProductNumber" , "SalesQuantity" , "OrderNumber" , "Period" )]
+PRD2017 <- PRD02[PRD02$SalesDate >= "2017-01-01" & PRD02$SalesDate <= "2017-12-31" , c("CustomerAccount" , "SalesDate" , "ProductNumber" , "SalesQuantity" , "OrderNumber" , "Period" )]
+PRD2018 <- PRD02[PRD02$SalesDate >= "2018-01-01" & PRD02$SalesDate <= "2018-12-31" , c("CustomerAccount" , "SalesDate" , "ProductNumber" , "SalesQuantity" , "OrderNumber" , "Period" )]
+PRD2019 <- PRD02[PRD02$SalesDate >= "2019-01-01" & PRD02$SalesDate <= "2019-12-31" , c("CustomerAccount" , "SalesDate" , "ProductNumber" , "SalesQuantity" , "OrderNumber" , "Period" )]
+
+```
+
+***YILLARI AYLARA GÖRE GRUPLANDIRMA***
+
+```{r}
+sum14 <- PRD2014 %>%
+  group_by(Period)%>%
+  summarize(Toplam_Satis = sum(SalesQuantity))
+sum15 <- PRD2015 %>%
+  group_by(Period)%>%
+  summarize(Toplam_Satis = sum(SalesQuantity))
+sum16 <- PRD2016 %>%
+  group_by(Period)%>%
+  summarize(Toplam_Satis = sum(SalesQuantity))
+sum17 <- PRD2017 %>%
+  group_by(Period)%>%
+  summarize(Toplam_Satis = sum(SalesQuantity))
+sum18 <- PRD2018 %>%
+  group_by(Period)%>%
+  summarize(Toplam_Satis = sum(SalesQuantity))
+sum19 <- PRD2019 %>%
+  group_by(Period)%>%
+  summarize(Toplam_Satis = sum(SalesQuantity))
+```
+
+6 YILI 72 AYA GÖRE GRUPLANDIRMA
+
+```{r}
+sum72 <- PRD02 %>%
+  group_by(Period)%>%
+  summarize(Toplam_Satis = sum(SalesQuantity))
+sum72$Period <- c(1:72)
+```
+
+YILLAR TOPLAMI
+
+```{r}
+#library(lubridate)
+```
+```{r}
+year_sum <- PRD02 %>%
+  group_by(year(SalesDate))%>%
+  summarize(Toplam_Satis = sum(SalesQuantity))
+```
+
+YILLARA GÖRE SAÇILIM GRAFİĞİ
+
+```{r}
+plot( 1:72 , sum72$Toplam_Satis ,
+      pch = 20 , bty = "L",
+      xlim = c(1 , 72),
+      ylim = c(0 , 160000),
+      main = "Aylara Göre Satış Toplamı",
+      xlab = "Aylar",
+      ylab = "Satış Miktarları"
+)
+```
+
+BOXPLOT GRAFİĞİ
+
+```{r}
+boxplot(year_sum[ , c("Toplam_Satis")],
+        main = "Yillara Göre Satış Adedinde Uç Yıllar",
+        xlab = "2014-2019 Yıllari",
+        ylab = "Satis Toplamlari",
+        ylim = c(00000 , 600000),
+        col = "orange",
+        border = "black",
+        pch = 19)
+```
+
+ISI HARİTASI
+
+```{r}
+monthyearsum <- data.frame(
+  aylar = c(1:12),
+  "2014" = sum14$Toplam_Satis,
+  "2015" = sum15$Toplam_Satis,
+  "2016" = sum16$Toplam_Satis,
+  "2017" = sum17$Toplam_Satis,
+  "2018" = sum18$Toplam_Satis,
+  "2019" = sum19$Toplam_Satis
+)
+monthyearmatrix <- as.matrix(monthyearsum)#ısı haritası matrix olmalı
+
+#library(RColorBrewer)
+
+heatmap(monthyearmatrix[ , -1 ] , scale = "column",
+        Colv = NA , Rowv = NA, #aylar kolonunu ve dendrogramı çıkarttık
+        cexRow = 1.3,
+        cexCol = 1.3,
+        col = colorRampPalette(brewer.pal(9 , "Blues"))(20))
+legend("bottomright" , legend = c("Min" , "Ort" , "Max"),
+       fill = colorRampPalette(brewer.pal(9 , "Blues"))(3)) # eger r script kullanmiyorsaniz satiri degil chunk'i cagirin
+
+```
+
+REGRESYON ANALİZİ
+
+Regresyon analizi değişkene bağlı olarak farklılıkları inceler. Bizim problemimizde amacımız satış tahminidir. Fakat herhangi bir kritere göre değişimi incelemiyoruz. Zamana bağlı olarak hareketini ileriki dönem zamanına uygun olarak tahminlemeye çalışıyoruz. Bu sebeple aşağıdaki regresyon analizi mantıklı değildir. 1-72 arası olan dönem grubu ile sayıların arttıkça satışların artması/azalması arasında bağlantı kuran bir model oluşturmuştur. Fakat bizim böyle bir şeye ihtiyacımız yok. Örneğin siparişi oluşturanların hangi şehirden sipariş verdiklerine ait bir değişkenimiz olsaydı o zaman satış adedimizin sipariş verilen şehire göre değişimini inceleyebilirdik. Zaman serisi analizlerinde regresyon analizi karıştırılabildiği için eklemek istedim..
+
+```{r}
+PRDmodel <- lm(Toplam_Satis ~ Period , data = sum72)
+summary(PRDmodel)
+```
+ 
+***FORECAST METHODS***
+
+R forecast package: https://cran.r-project.org/web/packages/forecast/forecast.pdf
+ 
+
+***Last Period's Demand Method***
+ 
+ Son dönem talebine göre tahminleme, tahmin yöntemlerinde analizinin basit olarak yapılabildiği ve bazı problemlerde kullanılabilen bir yöntemdir. Önceki dönemin gerçek verisini sonraki dönemin tahmini yapar ve gerçekleşen veriye göre hatayı ölçer. Bu şekilde geçerliliğinin hesabı yapılır. 
+ 
+```{r}
+sum72_L <- sum72
+sum72_L$Forecast <- rep(0,72) 
+sum72_L$Forecast[c(2:72)] <- sum72$Toplam_Satis[c(1:71)]
+head(sum72_L)
+```
+```{r}
+sum72_L$Error <- rep(0,72) 
+sum72_L$Error[c(2:72)] <- abs(sum72_L$Forecast[c(2:72)] - sum72_L$Toplam_Satis[c(2:72)])
+head(sum72_L)
+```
+ 
+```{r}
+sum(sum72_L$Error)/71 ##MAD ortalama mutlak sapma
+sum72_L$ErrorSquare <- (sum72_L$Error)^2
+sum(sum72_L$ErrorSquare)/71 ##MSE ortalama hata karesi
+sqrt(sum(sum72_L$ErrorSquare)/71) #RMSE kök ortalama hata kare
+```
+Hata değerleri formülleri için : https://veribilimcisi.com/2017/07/14/mse-rmse-mae-mape-metrikleri-nedir/ 
+
+***MOVING AVERAGE METHOD***
+
+Hareketli Ortalama Yöntemi gelecek döneminin talep tahminini önceki belirli sayıda bir dönemin gerçekleşmiş verilerinin ortalamaları olarak belirler. Bu yöntem talebin yükselen bir eğim gösterdiği verisetlerinde düşük bir sonuç tam tersi durumda yüksek bir sonuç ortaya koyacaktır.
+
+```{r}
+#library(fpp2)
+#library(TTR)
+#library(forecast) 
+S <-ts(sum72[,2],start=c(1),frequency=1)
+
+TS <- data.frame(S)    
+
+tttimeseries <- ts(TS)
+
+smatt <- SMA(tttimeseries, 4) # lag is 4    
+
+smatt
+
+```
+```{r}
+smatt <- smatt[-c(1:3)]
+
+forecasttt <- forecast(smatt, 3) # future 3 values
+summary(forecasttt)
+```
+
+
+***EXPONENTIAL SMOOTHING METHOD*** 
+
+Üstel düzeltme yöntemi, ağırlıklı ortalama yöntemini baz alan bir tahminleme metodudur. Ağırlıklı ortalama, hareketli ağırlıklı ortlama yöntemlerinin daha da geliştirilmiş bir yoludur. Amacı ya da daha doğrusu sistemi, yakın geçmiş dönemleri daha ağırlıklı olarak dikkate alarak bir ortalama hesaplamaktır. Bu ortalamayı da gelecek dönemlerin tahmininde kullanır. Yöntemde kullanılan bir alpha değeri bulunmaktadır. Bu alpha katsayısı 0 ile 1 arası bir değer olmakla beraber son dönemin ne derecede dikkate alınması gerektiğini belirler. 0 değerini alırsa daha önce bahsettiğimiz son dönem talebine göre tahminleme metoduna dönüşür. Yüksek alpha değerleri dalgalanan talep miktarlarında ve son döneme ilişkin analizlerde kullanılırken düşük alpha değerleri daha kararlı yapıya ait sistemlerde ve daha uzun döneme yapılan tahminlemelerde görülür. 
+
+***Simple Exponential Smoothing***
+
+Sezona bağlı olmayan veriler için yapılacak tahminlemelerde kullanılan yöntemlerdendir. 
+
+
+
+```{r}
+Z <-ts(sum72[ ,2], start=c(1),frequency=1)
+head(Z)
+esmtt <- window(Z, end = 60)
+esmtf <- window(Z, start = 61)
+```
+İlk olarak train ve test olarak iki gruba ayırıyoruz. Daha sonra train (esmtt), 60 aylık olan verimizi ses'e(simple exponential smoothing) veriyoruz. Yukarıda bahsettiğimiz alpha değerini ve tahmin etmeye çalıştığımız 12 ay için h=12 değerini fonksiyona veriyoruz. 
+
+Simple ES, hesaplaması için bir örnek verelim. Örneğin ilk 4 dönem verimiz sırasıyla [6000,4000,8000,7000] ve alpha=0.7 olsun. 4. Dönem tahminini ilk üç ayın ortalaması ile belirleyelim. (Başka bir yöntem de kullanabilirdik burada..) 4. dönem tahmini = (6000+4000+8000)/3 = 6000. 5. ay tahmminini ise basit üstel düzeltme ile yapalım.  tahmin_5.ay = (0.7 x 7000) + ((1-0.7) x 6000)) = 6700
+
+
+```{r}
+ses.esmt <- ses(esmtt, alpha = .2, h = 12)
+ses.esmt
+autoplot(ses.esmt)
+```
+
+Tahminimiz grafikte görüldüğü üzere düz bir şekilde gelecek tahminlemesi yaptı. Bu yöntem mevsimsel ve dönemsel dalgalanmaya sahip olmayan, düz bir gelecek beklentisi çevresinde hareket eden serilerin analizinde uygulanmaktadır.
+
+```{r}
+esmt.dif <- diff(esmtt)
+esmt.dif
+autoplot(esmt.dif)
+```
+
+Düz,doğrusal bir tahmini düzeltmek için trendi kaldırıp verilerimizi farklılaştırıyoruz. esmt.diff önceki döneme göre toplam satış adedindeki değişimi temsil eder.
+
+
+```{r}
+ses.esmt.dif <- ses(esmt.dif, alpha = .2, h = 12)
+autoplot(ses.esmt.dif)
+```
+```{r}
+esmt.dif.test <- diff(esmtf)
+accuracy(ses.esmt.dif, esmt.dif.test)
+```
+
+Daha sonra amacımız en uygun alpha değerini seçmektir.
+Bunu 0 ve 1 arasında 100 sayı oluşturup döngüye alıp hepsinin hata oranını alarak buluyoruz. En düşük hata oranını sağlayan alpha optimal oluyor.
+
+```{r}
+alpha <- seq(.01, .99, by = .01)
+RMSE <- NA
+for(i in seq_along(alpha)) {
+  fit <- ses(esmt.dif, alpha = alpha[i], h = 12)
+  RMSE[i] <- accuracy(fit, esmt.dif.test)[2,2]
+}
+```
+
+DataFrame'e dönüştürüp uygun a değerini bulma
+
+```{r}
+alpha.fit <- data.frame(alpha, RMSE)
+alpha.min <- filter(alpha.fit, RMSE == min(RMSE))
+is.na(alpha.min)
+
+indexx <- data.frame(
+  alpha = alpha.min[1 , 1],
+  RMSE = alpha.min[1, 2])
+
+```
+
+Plot RMSE vs. alpha
+
+```{r}
+#library(ggplot2)
+
+ggplot(alpha.fit, aes(alpha, RMSE)) +
+  geom_line() +
+  geom_point(data = indexx, aes(alpha, RMSE), size = 3, color = "blue") 
+```
+
+Uygun alpha degerine gore tahminleme
+
+```{r}
+ses.esmt <- ses(esmtt, alpha = alpha.min[1, 1], h = 12)
+autoplot(ses.esmt)
+```
+```{r}
+esmt.dif <- diff(esmtt)
+autoplot(esmt.dif)
+```
+```{r}
+ses.esmt.dif <- ses(esmt.dif, alpha = alpha.min[1, 1], h = 12)
+autoplot(ses.esmt.dif)
+```
+```{r}
+esmt.dif.test <- diff(esmtf)
+accuracy(ses.esmt.dif, esmt.dif.test)
+```
+
+
+***Holt's exponential smoothing(ciftli ustel duzeltme)***
+
+SES, uzun vadeli bir trende sahip verilerle iyi performans göstermeyebilir. Son olarak, fark alma (diff) ile trendi nasıl kaldırabileceğimizi ve sonrasında SES ile tekrarlayabileceğimize baktık. Verilerdeki trendi yakalarken üstel yumuşatma uygulamak için alternatif bir yöntem ise Holt Yöntemini kullanmaktır .
+
+Holt'un çiftli üstel düzeltmesindeki farkı şu örnekle gösterelim. 
+
+Örnek: Bugüne kadarki kan testlerinin haftalık ortalaması 28 ve trend 3'tür. Bu haftanın talebi 27 kan testidir. 2. ve 3. haftanın trende göre tahminini yapın?(a: 0.2 ve b: 0.20)
+
+Lt --> t zamanındaki seviye tahmini  (a x At) + (1-a) x (Lt-1 + Tt-1)
+Tt --> t zamanındaki trend tahmini    b x (Lt - Lt-1) + (1-b) x Tt-1
+Ft+m  Lt + (m x Tt)
+
+#Lo = 28 To = 3 L1 = (0.2)x(27) + (0.8)x(27+3) L1 = 30.2
+ 
+#T1 = 0.2 x (30.2 - 28) + (0.8) x 3  T1 = 2.8
+
+#F2 = 30.2 + 1 x (2.8) F2 = 33
+
+#F3 = 30.2 + 2 x (2.8) F2 = 35.8
+
+
+Holt fonksiyonunu manuel olarak ayarlayabiliriz. Parametreler alpha ve beta; bu parametreleri NULL olarak bırakırsak, holt aslında en uygun model parametrelerini belirleyecektir. Bunu AIC ve BIC değerlerini minimize ederek yapacaktır. 
+
+```{r}
+holtesmt <- holt(esmtt, h = 12)
+autoplot(holtesmt)
+```
+```{r}
+holtesmt$model
+
+accuracy(holtesmt, esmtf)
+```
+
+***SEASONAL*** 
+
+```{r}
+sum72_2 <- cbind(sum72, c(rep(1,3),rep(2,3), rep(3,3), rep(4,3)))
+sum72_3 <- cbind(sum72_2, c(rep(2014,12),rep(2015,12),rep(2016,12),rep(2017,12),rep(2018,12),rep(2019,12)))
+colnames(sum72_3) <- c("Period","Sales","Quarter","Year")
+sum72_3 <- sum72_3[c("Year","Quarter","Period","Sales")]
+
+head(sum72_3)
+```
+
+
+```{r}
+R <- ts(sum72_3$Sales)
+plot(R , xlim = c(0,84))
+```
+```{r}
+sum72_3$Quarter <- as.factor(sum72_3$Quarter)
+output <- lm(Sales ~ Quarter, data = sum72_3)
+summary(output)
+```
+```{r}
+output2 <- lm(Sales ~ factor(Quarter, exclude = "4"), data = sum72_3)
+summary(output2)
+```
+
+
+***ARIMA***
+
+ARIMA, Otomatik Gerilemeli Entegre Hareketli Ortalama anlamına gelir ve üç sıra parametresi ile belirtilir: (p, d, q).
+
+AR(p) Otoregresyon: Mevcut bir gözlem ile önceki bir döneme ilişkin gözlemler arasındaki bağımlı ilişkiyi kullanan bir regresyon modeli. Bir otoregresif (AR(p)) bileşeni, zaman serileri için regresyon denklemindeki geçmiş değerlerin kullanımına atıfta bulunur. 
+
+I(d) Entegrasyon: Zaman serisini durağan hale getirmek için gözlemlerin farkını (bir önceki zaman adımındaki gözlemden bir gözlemi çıkarma) kullanır. Fark alma, bir serinin mevcut değerlerinin önceki değerleriyle d kez çıkarılmasını içerir.
+
+MA(q) Hareketli Ortalama: Bir gözlem ile gecikmeli gözlemlere uygulanan hareketli ortalama modelinden kalan hata arasındaki bağımlılığı kullanan bir model. Hareketli ortalama bileşeni, modelin hatasını önceki hata terimlerinin bir kombinasyonu olarak gösterir. q sırası, modele dahil edilecek terimlerin sayısını temsil eder.
+
+Amacı kısaca serinin geçmiş değerlerinden ve geçmişte yapılan tahmin hatalarından değişkenin gelecek değerini tahmin etmektir.
+
+Bakabilirsiniz : https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/arima
+
+Tahminleme yapmadan grafik çizme
+
+```{r}
+plot(Z , main = "Graph without forecasting",
+     col.main = "darkgreen")
+```
+
+Arima ile model oluşturma
+
+```{r}
+fit <- auto.arima(Z)
+```
+
+Gelecek 12 dönem tahmini
+
+```{r}
+forecastedValues <- forecast(fit, 12)
+print(forecastedValues)
+
+plot(forecastedValues, main = "Graph with forecasting",
+     col.main = "darkgreen") 
+
+```
+
+Son yıl hariç tutularak arima modeli oluşturma
+
+```{r}
+fit <- auto.arima(Z)
+fit2 <- auto.arima(head(Z, -12))
+summary(fit2)
+```
+
+Arima modellemeleri için: https://people.duke.edu/~rnau/411arim.htm
+
+Gelecek 24 dönem tahmini
+
+```{r}
+forecastedValues2 <- forecast(fit2, 24)
+print(forecastedValues2)
+
+plot(forecastedValues2, main = "Graph with forecasting",
+     col.main = "darkgreen") 
+
+```
+
+
+***KARŞILAŞTIRMALAR***
+
+Last Period's Demand
+
+```{r}
+sum(sum72_L$Error)/71 ##MAD ortalama mutlak sapma
+sum(sum72_L$ErrorSquare)/71 ##MSE ortalama hata karesi
+sqrt(sum(sum72_L$ErrorSquare)/71) #RMSE kök ortalama hata kare
+```
+
+Moving Average
+
+```{r}
+summary(forecasttt)
+```
+
+Simple Exponential
+
+```{r}
+accuracy(ses.esmt.dif, esmt.dif.test)
+```
+
+Holt's exponential
+
+```{r}
+accuracy(holtesmt, esmtf)
+```
+
+Seasonal
+
+```{r}
+summary(output)
+mse <- mean(residuals(output)^2)
+rmse <- sqrt(mse)
+rmse
+```
+
+Arima
+
+```{r}
+summary(fit)
+```
+```{r}
+summary(fit2)
+```
+```{r}
+Z
+fit
+fit2
+```
+
+
+Tahmin Performans Ölçütlerinden RMSE(Root Mean Square Error) (Kök Ortalama Hata Karesi) yöntemine göre karşılaştırma yapabiliriz. RMSE tahminleyicinin tahmin ettiği değerler ile gerçek değerleri arasındaki uzaklığın bulunmasında sıklıkla kullanılan, hatanın büyüklğünü ölçen kuadratik bir metriktir. RMSE tahmin hatalarının (kalıntıların) standart sapmasıdır. Karşılaştırmalar içerisinde farklı hata metrikleri de incelenmiştir. Bütün metotların ortak bir hata metriğinde karşılaştırılması için RMSE seçilmiştir. 
+
+MAE ve RMSE hata metrikleri incelendiğinde iki farklı model için MAE'ye göre model 1 RMSE'ye göre model 2 daha iyi çıkabilir. RMSE hatanın ilk olarak karesini aldığı için, RMSE de model 2'nin büyük çıkması bize hata değerlerinde model 2'de büyük değerlerin daha fazla olduğunu söyler.
+
+Özet kısımlarında görülen AIC ve BIC ise farklı diğer hata metrikleridir. Akaike ve Bayasen metrikleri iki veya daha fazla model birbirleriyle karşılaştırılırken kullanılır. İçerisinde modeldeki parametre sayısını belirten k parametresi bulunur. Genellikle makine öğrenmesi girişinde modellemeler yaparken veri düzenlemelerinde oluşturulan farklı modellerde iyileşme incelemesinin yapılması amacıyla model karşılaştırmalarında kullanılır. 
+
+Bu problemimizde en düşük RMSE sonucu moving average yöntemine aittir. Hareketli ortalama yöntemi önceki 4 ayın ortalamasını tahmin olarak sunduğu için verimizin akışına uygun olmayan son ayları yumuşatmıştır. Örneğin son dönem talebi veya son döneme ağırlık veren basit üstel düzeltme yöntemleri son aylarda (70 71 72. aylarda) hata değerini düşürememişlerdir. Sebebi ise şöyledir: 70. ay 127k iken 71. ay 15k satış adedi görülür. Biz 71. ay için tahminleme yaparken 70.aya ağırlık vererek tahmninleme yaparsak yüksek hata alırız. 
+
+Sezonsallık ise bu veri setinde anlam bulamamıştır. Çeyrekliklere göre yapılan hesaplamalarda Adj R square çok düşük çıkmıştır. Ayrıca 72 aylık grafik incelendiğinde görsel olarak da belirli aylar için iniş çıkış gözlemlenmemiştir.
+
+```{r}
+plot(sum72_3$Quarter,sum72_3$Sales)
+```
+Holt yöntemi trende göre hesaplama yaptığı için biraz daha iyi sonuçlar verirken trendin hesaplanmasında ağırlık yine son aylar olduğu için moving average'ın yukarsında hata vermiştir. Moving average da aslında son ayların ortalaması olduğu için trendi yakalamaya çalışan bir metot olarak görülebilir. Ayrıca moving average'da belirlediğimiz lag = 4' de değiştirilebilir. Bu varsayımlar bu çalışmada örnek olarak kullanılmışlardır. 
+
+Sonuç olarak bu çalışmada R programlama üzerinden veri düzenleme, ayıklama, temizleme, ön işleme gibi adımlara yer verilmiş daha sonra problemin amacı olan talep tahmin yöntemleri ile modeller oluşturulmuştur. Bu modeller hata metriklerine göre değerlendirilmiş ve karşılaştırılmıştır.  
+
+

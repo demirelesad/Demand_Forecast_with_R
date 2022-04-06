@@ -1,0 +1,15 @@
+name: "my-website"
+output_dir: "docs"
+navbar:
+  title: "Demand Forecast with R"
+  left:
+    - text: "Home"
+      href: demandforecast.html
+    - text: "About"
+      href: about.html
+output:
+  html_document:
+    theme: cosmo
+    toc: true
+    highlight: textmate
+    css: styles.css
